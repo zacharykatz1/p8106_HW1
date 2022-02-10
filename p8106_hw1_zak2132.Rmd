@@ -198,3 +198,55 @@ lasso_predict = predict(cv.lasso, newx = test_matrix, s = "lambda.1se", type = "
 mean((lasso_predict - test_data$sale_price)^2)
 ```
 
+## Elastic net
+
+```{r}
+set.seed(2132)
+
+enet.fit = train(x = x_all, y = training_data$sale_price,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = seq(0, 1, length = 21),
+                                         lambda = exp(seq(-2, 8, length = 50))),
+                  preProcess = c("center", "scale"),
+                  trControl = control_cv
+)
+
+enet.fit$bestTune
+```
+
+```{r}
+myCol = rainbow(25)
+myPar = list(superpose.symbol = list(col = myCol),
+             superpose.line = list(col = myCol))
+
+plot(enet.fit, par.settings = myPar)
+
+coef(enet.fit$finalModel, enet.fit$bestTune$lambda)
+```
+
+```{r}
+set.seed(2132)
+
+enet.pred = predict(enet.fit, newdata = test_matrix)
+
+mean((enet.pred - test_data$sale_price)^2)
+```
+
+## Model comparison
+
+```{r}
+set.seed(2132)
+
+# Re-do linear model using glmnet
+lm.fit = train(x = x_all, y = training_data$sale_price,
+                  method = "lm",
+                  preProcess = c("center", "scale"),
+                  trControl = control_cv
+)
+
+# Comparing different models based only on training error
+# Elastic net probably optimal based on this
+resamp = resamples(list(enet = enet.fit, lasso = lasso.fit, lm = lm.fit))
+summary(resamp)
+```
+
