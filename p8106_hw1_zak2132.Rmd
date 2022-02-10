@@ -1,0 +1,200 @@
+---
+title: 'Data Science II (P8106) Homework #1'
+author: 'Zachary Katz (UNI: zak2132)'
+date: "2/22/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(tidyverse)
+library(viridis)
+library(leaps)
+library(corrplot)
+library(Hmisc)
+library(caret)
+library(glmnet)
+library(plotmo)
+
+# Set global options for embedding plots and choosing themes
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+## Data Preprocessing and EDA
+
+```{r data cleaning}
+# Set seed
+set.seed(2132)
+
+# Load data
+training_data = read_csv("./Data/housing_training.csv") %>% 
+  janitor::clean_names() 
+
+test_data = read_csv("./Data/housing_test.csv") %>% 
+  janitor::clean_names()
+
+# Eliminate rows containing NA entries
+training_data = na.omit(training_data)
+test_data = na.omit(test_data)
+```
+
+```{r data summary}
+# Summary statistics of training data
+summary(training_data)
+skimr::skim(training_data)
+
+# Summary statistics of test data
+summary(test_data)
+skimr::skim(test_data)
+
+# NOTE TO SELF LATER: use summarytools package?
+```
+
+## Linear regression
+
+```{r best subset model selection}
+regsubsets_obj = regsubsets(sale_price ~ ., data = training_data, method = "exhaustive", nbest = 1)
+
+plot(regsubsets_obj, scale = "bic")
+
+summary(regsubsets_obj)
+```
+
+Vars to use: `gr_liv_area`, `total_bsmt_sf`, `bsmt_unf_sf`, `year_built`, `overall_qualExcellent`, `overall_qualGood`, `overall_qualVery_Excellent`, `overall_qualVery_Good`, `lot_area`
+
+```{r correlation plots}
+# Correlation plot for all predictors
+x_all = model.matrix(sale_price ~ ., training_data)[, -1]
+corrplot(cor(x_all), method = "circle", type = "full")
+
+# Correlation plot for only best subset predictors
+x_best = x_all[, c("gr_liv_area", "total_bsmt_sf", "bsmt_unf_sf", "year_built", "overall_qualExcellent", "overall_qualGood", "overall_qualVery_Excellent", "overall_qualVery_Good", "lot_area")]
+corrplot(cor(x_best), method = "circle", type = "full")
+
+# Check numerically
+round(rcorr(x_best)$r, 2)
+```
+
+### On all predictors
+
+```{r model training using cross-validation}
+set.seed(2132)
+control_cv = trainControl(method = "repeatedcv", number = 20, repeats = 5)
+
+fit_lm = train(sale_price ~ .,
+               preProcess = "scale",
+               data = training_data,
+               method = "lm",
+               trControl = control_cv)
+
+fit_lm$finalModel
+```
+
+```{r prediction and evaluation of accuracy}
+predict_lm = predict(fit_lm, newdata = test_data)
+rmse_lm = RMSE(predict_lm, test_data$sale_price)
+
+rmse_lm
+```
+
+### On best subset of predictors
+
+```{r model training using cross-validation}
+set.seed(2132)
+train_best_subsets = training_data[, c("sale_price", "gr_liv_area", "total_bsmt_sf", "bsmt_unf_sf", "year_built", "overall_qual", "lot_area")]
+test_best_subsets = test_data[, c("sale_price", "gr_liv_area", "total_bsmt_sf", "bsmt_unf_sf", "year_built", "overall_qual", "lot_area")]
+
+control_cv = trainControl(method = "repeatedcv", number = 20, repeats = 5)
+
+fit_lm_best = train(sale_price ~ .,
+               preProcess = "scale",
+               data = train_best_subsets,
+               method = "lm",
+               trControl = control_cv)
+
+fit_lm_best$finalModel
+```
+
+```{r prediction and evaluation of accuracy}
+predict_lm_best = predict(fit_lm_best, newdata = test_best_subsets)
+rmse_lm_best = RMSE(predict_lm_best, test_best_subsets$sale_price)
+
+rmse_lm_best
+```
+
+## Lasso model
+
+### Using `caret`
+
+```{r caret lasso training}
+set.seed(2132)
+
+lasso.fit = train(x = x_all, y = training_data$sale_price,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,
+                                         lambda = exp(seq(5, 2, length = 100))),
+                  preProcess = c("center", "scale"),
+                  trControl = control_cv
+)
+
+plot(lasso.fit, xTrans = log)
+
+lasso.fit$bestTune
+
+coef(lasso.fit$finalModel, lasso.fit$bestTune$lambda)
+```
+
+```{r caret lasso prediction}
+set.seed(2132)
+
+test_matrix = model.matrix(sale_price ~ ., test_data)[, -1]
+
+lasso.pred = predict(lasso.fit, newdata = test_matrix)
+
+mean((lasso.pred - test_data$sale_price)^2)
+```
+
+### Using `glmnet`
+
+```{r glmnet lasso training}
+cv.lasso = cv.glmnet(x = x_all, y = training_data$sale_price,
+                     standardize = TRUE,
+                     alpha = 1,
+                     lambda = exp(seq(8, -5, length = 100)))
+
+plot(cv.lasso)
+
+# Use 1se rule
+cv.lasso$lambda.1se
+
+# Note: does this use lambda.1se?
+# Note: this isn't standardized either
+plot(cv.lasso$glmnet.fit, "lambda", label=TRUE)
+
+# Optimal coefficients
+pred_coef = predict(cv.lasso, s = cv.lasso$lambda.1se, type = "coefficients")
+
+# How many non-zero predictors?
+non_zero_coef = pred_coef %>% as.matrix() %>% as.data.frame()
+length(which(non_zero_coef != 0))
+```
+
+```{r glmnet lasso prediction}
+lasso_predict = predict(cv.lasso, newx = test_matrix, s = "lambda.1se", type = "response")
+
+mean((lasso_predict - test_data$sale_price)^2)
+```
+
