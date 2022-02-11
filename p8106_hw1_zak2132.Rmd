@@ -21,8 +21,6 @@ output:
 In this exercise, we'll predict the sale price of a home based on a set of feature variables. We begin by loading the appropriate libraries and setting our defaults. Then, we'll import our data and eliminate any rows with NAs before providing summary statistics.
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
 # Load packages
 library(tidyverse)
 library(viridis)
@@ -32,6 +30,7 @@ library(Hmisc)
 library(caret)
 library(glmnet)
 library(plotmo)
+library(pls)
 
 # Set global options for embedding plots and choosing themes
 knitr::opts_chunk$set(
@@ -39,11 +38,14 @@ knitr::opts_chunk$set(
   fig.asp = .6,
   out.width = "90%"
 )
+
 theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
 options(
   ggplot2.continuous.colour = "viridis",
   ggplot2.continuous.fill = "viridis"
 )
+
 scale_colour_discrete = scale_colour_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
 ```
@@ -71,8 +73,6 @@ summary(test_data)
 skimr::skim(test_data)
 
 table(sapply(training_data, class))
-
-# NOTE TO SELF LATER: use summarytools package?
 ```
 
 To predict our single continuous, numeric outcome (`sale_price`), we have 25 predictors, including 21 numeric variables (such as `lot_area` and `open_porch_sf`) and 4 factor variables (`overall_qual`, `kitchen_qual`, `fireplace_qu`, and `external_qual`). Our training data has `r nrow(training_data)`observations, while our testing data has `r nrow(test_data)` hold-out observations.
@@ -121,7 +121,7 @@ plot(regsubsets_obj, scale = "bic")
 summary(regsubsets_obj)
 ```
 
-As expected, one primary collinearity was found (between `garage_area` and `garage_cars`). Were we to choose only several predictors to use, they would be, according to our algorithm: `gr_liv_area`, `total_bsmt_sf`, `bsmt_unf_sf`, `year_built`, `overall_qualExcellent`, `overall_qualGood`, `overall_qualVery_Excellent`, `overall_qualVery_Good`, and `lot_area`. 
+As expected, one primary collinearity was found (between `garage_area` and `garage_cars`). Were we to choose only several predictors to use, they might be, according to our algorithm: `gr_liv_area`, `total_bsmt_sf`, `bsmt_unf_sf`, `year_built`, `overall_qualExcellent`, `overall_qualGood`, `overall_qualVery_Excellent`, `overall_qualVery_Good`, and `lot_area`. 
 
 We can check out what the correlation matrix looks like with only these predictors.
 
@@ -136,7 +136,7 @@ round(rcorr(x_best)$r, 2) %>%
   as.data.frame()
 ```
 
-We no longer have any major collinearities.
+We no longer have any major collinearities using this variable selection procedures. However, for the purposes of this assignment, we'll assume use of all predictors for linear regression.
 
 ### Linear regression modeling using `fit_lm`
 
@@ -155,7 +155,7 @@ control_cv = trainControl(method = "repeatedcv", number = 20, repeats = 5)
 
 # Fit linear model on training data using cross-validation
 fit_lm = train(sale_price ~ .,
-               preProcess = "scale",
+               preProcess = c("scale", "center"),
                data = training_data,
                method = "lm",
                trControl = control_cv)
@@ -167,7 +167,7 @@ fit_lm$finalModel
 train_mse_lm = mean(fit_lm$resample$RMSE)
 ```
 
-We choose the model with the minimum training RMSE to apply to our predictions. This model's training RMSE is `r train_mse_lm`.
+We choose the model with the minimum training cross-validation RMSE to apply to our test data. This model's training RMSE after cross-validation is `r train_mse_lm`.
 
 Then, we apply the model to the test data and obtain the test MSE as a measure of accuracy.
 
@@ -179,7 +179,7 @@ predict_lm = predict(fit_lm, newdata = test_data)
 # Report test RMSE
 rmse_lm = RMSE(predict_lm, test_data$sale_price)
 
-rmse_lm
+rmse_lm %>% knitr::kable()
 ```
 
 #### Using `caret`
@@ -203,10 +203,10 @@ round(coef(fit_lm_caret$finalModel), 1)
 # Report cross-validation training RMSE
 train_mse_lm_caret = mean(fit_lm_caret$resample$RMSE)
 
-train_mse_lm_caret
+train_mse_lm_caret %>% knitr::kable()
 ```
 
-We choose the model with the minimum training RMSE to apply to our predictions. This model's training RMSE is `r train_mse_lm_caret`. Then, we'd measure the performance of our best model on the test data, finding the same test RMSE as we found using the first method.
+Once again, after cross-validation, we choose the model with the minimum training RMSE to apply to our test data. This model's training RMSE is `r train_mse_lm_caret`. Then, we'd measure the performance of our best model on the test data, finding the same test RMSE as we found using the first method.
 
 ```{r Linear model prediction caret}
 
@@ -216,18 +216,18 @@ predict_lm_caret = predict(fit_lm_caret, newdata = testing_matrix_all)
 # Report test RMSE
 rmse_lm_caret = RMSE(predict_lm_caret, test_data$sale_price)
 
-rmse_lm_caret
+rmse_lm_caret %>% knitr::kable()
 ```
 
-There are a number of potential disadvantages with the linear model. For instance, TO DO
+There are a number of potential disadvantages with the linear model. First, we know that high correlations between predictions may be problematic, leading the variance of coefficients to increase (hence why we might normally use some subset of predictors, despite the fact that we used all in this case). When we have many predictors, as we have in this data set, we also would prefer many times more observations than we are given; otherwise, we sacrifice degrees of freedom. As shown below, regularized regression may be more appropriate here in order to control variance. For example, lasso regression may yield sparser models. Moreover, linear regression is only limited to linear relationships between predictors and outcome, may be sensitive to outliers, and requires independent data. 
 
 ## Lasso model
 
-The Lasso model utilizes an L1 penalty that, at times, forces some of the coefficient estimates to zero with sufficiently large lambda. This provides a useful variable selection process that may improve interpretability of the our model.
+The Lasso model utilizes an L1 penalty that, at times, forces some of the coefficient estimates to zero with sufficiently large lambda. This provides a useful variable selection process that may improve interpretability of our model.
+
+We'll try four approaches below: two from `glmnet` and two from `caret`. For each package, we'll try either the lambda 1SE rule or the lambda min rule.
 
 ### Using `glmnet`
-
-For each of other computational approaches (`glmnet` or `caret`), we may decide to use the lambda that minimizes RMSE or the lambda 1SE. We'll try both.
 
 #### Lambda 1SE rule
 
@@ -241,7 +241,7 @@ cv_lasso_glmnet_1se = cv.glmnet(x = training_predictors_matrix,
 plot(cv_lasso_glmnet_1se)
 
 # Use 1se rule
-cv_lasso_glmnet_1se$lambda.1se
+cv_lasso_glmnet_1se$lambda.1se %>% knitr::kable()
 ```
 
 When the 1SE rule is applied, our lambda is `r round(cv_lasso_glmnet_1se$lambda.1se, 1)`. Our optimal coefficients are as follows:
@@ -258,7 +258,7 @@ Ultimately, we include `r num_pred` predictors (plus the intercept) in our model
 
 ```{r glmnet lasso trace plot 1se}
 plot(cv_lasso_glmnet_1se$glmnet.fit, "lambda", label = TRUE)
-abline(v = 6.69)
+abline(v = 6.686)
 ```
 
 With a fitted model that uses the lambda 1se, we perform prediction and assess the test error as follows:
@@ -268,9 +268,10 @@ With a fitted model that uses the lambda 1se, we perform prediction and assess t
 # Make predictions using glmnet object
 lasso_predict_1se = predict(cv_lasso_glmnet_1se, newx = testing_predictors_matrix, s = "lambda.1se", type = "response")
 
+# Find RMSE test error
 rmse_lasso_glmnet_1se = RMSE(lasso_predict_1se, test_data$sale_price)
 
-rmse_lasso_glmnet_1se
+rmse_lasso_glmnet_1se %>% knitr::kable()
 
 # Alternative assessment of test error
 lasso_test_error_1se = assess.glmnet(cv_lasso_glmnet_1se,
@@ -280,12 +281,13 @@ lasso_test_error_1se = assess.glmnet(cv_lasso_glmnet_1se,
 # Find square root of MSE to get RMSE
 lasso_test_error_1se$mse %>% 
   as.data.frame() %>% 
-  sqrt()
+  sqrt() %>% 
+  knitr::kable()
 ```
 
 #### Lambda min rule
 
-```{r glmnet lasso training 1se}
+```{r glmnet lasso training min}
 cv_lasso_glmnet_min = cv.glmnet(x = training_predictors_matrix, 
                      y = training_outcomes_vector,
                      standardize = TRUE,
@@ -295,12 +297,12 @@ cv_lasso_glmnet_min = cv.glmnet(x = training_predictors_matrix,
 plot(cv_lasso_glmnet_min)
 
 # Use 1se rule
-cv_lasso_glmnet_min$lambda.min
+cv_lasso_glmnet_min$lambda.min %>% knitr::kable()
 ```
 
 When the lambda min rule is applied, our lambda is `r round(cv_lasso_glmnet_min$lambda.min, 1)`. Our optimal coefficients are as follows:
 
-```{r glmnet lasso coefficients 1se}
+```{r glmnet lasso coefficients min}
 # Obtain coefficients
 lasso_glmnet_coefs_min = coef(cv_lasso_glmnet_min, s = "lambda.min")
 
@@ -308,23 +310,23 @@ lasso_glmnet_coefs_min = coef(cv_lasso_glmnet_min, s = "lambda.min")
 num_pred_min = length(which(lasso_glmnet_coefs_min != 0))
 ```
 
-Ultimately, we include `r num_pred` predictors (plus the intercept) in our model using this lasso method with 1SE rule for our lambda tuning parameter. The trace plot below shows the the shrinkage in predictor coefficients as lambda increases, with a vertical line included for our chosen lambda 1se value.
+Ultimately, we include `r num_pred` predictors in our model using this lasso method with the min rule for our lambda tuning parameter. The trace plot below shows the the shrinkage in predictor coefficients as lambda increases, with a vertical line included for our chosen lambda min value.
 
-```{r glmnet lasso trace plot 1se}
+```{r glmnet lasso trace plot min}
 plot(cv_lasso_glmnet_min$glmnet.fit, "lambda", label = TRUE)
 abline(v = 4.06)
 ```
 
-With a fitted model that uses the lambda 1se, we perform prediction and assess the test error as follows:
+With a fitted model that uses the lambda min, we perform prediction and assess the test error as follows:
 
-```{r glmnet lasso predictions 1se}
+```{r glmnet lasso predictions min}
 
 # Make predictions using glmnet object
-lasso_predict_min = predict(cv_lasso_glmnet_min, newx = testing_predictors_matrix, s = "lambda.min", type = "response")
+lasso_predict_glmnet_min = predict(cv_lasso_glmnet_min, newx = testing_predictors_matrix, s = "lambda.min", type = "response")
 
-rmse_lasso_glmnet_min = RMSE(lasso_predict_min, test_data$sale_price)
+rmse_lasso_glmnet_min = RMSE(lasso_predict_glmnet_min, test_data$sale_price)
 
-rmse_lasso_glmnet_min
+rmse_lasso_glmnet_min %>% knitr::kable()
 ```
 
 ### Using `caret`
@@ -354,7 +356,7 @@ lasso_caret_fit_1se = train(x = training_predictors_matrix,
 plot(lasso_caret_fit_1se, xTrans = log)
 
 # Optimal lambda 1SE
-lasso_caret_fit_1se$bestTune$lambda
+lasso_caret_fit_1se$bestTune$lambda %>% knitr::kable()
 ```
 
 Our optimal lambda is `r lasso_caret_fit_1se$bestTune$lambda`.
@@ -375,19 +377,16 @@ lasso_pred_caret_1se = predict(lasso_caret_fit_1se, newdata = testing_predictors
 # Find test RMSE
 rmse_lasso_caret_1se = RMSE(lasso_pred_caret_1se, test_data$sale_price)
 
-rmse_lasso_caret_1se
+rmse_lasso_caret_1se %>% knitr::kable()
 ```
 
 #### Lambda min rule
 
-In `caret`, we may alternatively decide to use the more traditional lambda tuning that minimizes RMSE. We implement this similarly to the above, as follows:
+In `caret`, we may alternatively decide to use the more traditional lambda min tuning parameter. We implement this similarly to the above, as follows:
 
 ```{r caret lasso training min}
 
 set.seed(2132)
-
-# Set cross-validation parameters for 1SE
-control_cv_min = trainControl(method = "repeatedcv", number = 20, repeats = 5)
 
 # Fit model on training data
 lasso_caret_fit_min = train(x = training_predictors_matrix, 
@@ -396,14 +395,14 @@ lasso_caret_fit_min = train(x = training_predictors_matrix,
                   tuneGrid = expand.grid(alpha = 1,
                                          lambda = exp(seq(5, 2, length = 100))),
                   preProcess = c("center", "scale"),
-                  trControl = control_cv_min
+                  trControl = control_cv
 )
 
 # Plot RMSE against tuning parameter
 plot(lasso_caret_fit_min, xTrans = log)
 
 # Optimal lambda 1SE
-lasso_caret_fit_min$bestTune$lambda
+lasso_caret_fit_min$bestTune$lambda %>% knitr::kable()
 ```
 
 Our optimal lambda is `r lasso_caret_fit_min$bestTune$lambda`.
@@ -424,7 +423,7 @@ lasso_pred_caret_min = predict(lasso_caret_fit_min, newdata = testing_predictors
 # Find test RMSE
 rmse_lasso_caret_min = RMSE(lasso_pred_caret_min, test_data$sale_price)
 
-rmse_lasso_caret_min
+rmse_lasso_caret_min %>% knitr::kable()
 ```
 
 ## Elastic net
@@ -482,12 +481,74 @@ enet_pred = predict(enet_fit, newdata = testing_predictors_matrix)
 # Elastic net RMSE
 rmse_elastic_net = RMSE(enet_pred, test_data$sale_price)
 
-rmse_elastic_net
+rmse_elastic_net %>% knitr::kable()
 ```
 
 ## Partial least squares model
 
-TO DO
+Again, this can be implemented in more than one package, so we try both here for completeness. The same modeling procedure applies: we fit the model on training data using cross-validation, then once we've selected the optimal model / parameters, we apply it to the new test data.
+
+### Using `pls`
+
+```{r pls using pls}
+
+set.seed(2132)
+
+# Fit PLS model with cross-validation
+pls.mod = plsr(sale_price ~ .,
+               data = training_data,
+               scale = TRUE,
+               validation = "CV")
+
+# Summary of PLS model fit, including % variance explained and RMSEP
+summary(pls.mod) %>% knitr::kable()
+
+# Plot MSEP against number of components
+validationplot(pls.mod, val.type = "MSEP", legendpos = "topright")
+
+# Find cross-validation RMSE error (training data) only
+cv.mse = RMSEP(pls.mod) %>% knitr::kable()
+
+# How many components?
+ncomp.cv = which.min(cv.mse$val[1, , ])-1
+```
+
+Using the `pls` package, we obtain a test error of `r pls_rmse` (RMSE), with `r ncomp.cv` components included in the model. We use this optimal model to make predictions on the test data and find test error.
+
+```{r pls predict using pls}
+pred.pls = predict(pls.mod, newdata = test_data, ncomp = ncomp.cv)
+
+RMSE(pred.pls, test_data$sale_price) %>% 
+  knitr::kable()
+```
+
+### Using `caret`
+
+Alternatively, we can implement the partial least squares method similarly in `caret`.
+
+```{r pls using caret}
+
+set.seed(2132)
+
+# Train model on training data using cross-validation
+pls_fit_caret = train(x = training_predictors_matrix,
+                      y = training_outcomes_vector,
+                      method = "pls",
+                      tuneGrid = data.frame(ncomp = 1:39),
+                      trControl = control_cv,
+                      preProcess = c("center", "scale"))
+
+# Plot training RMSE against # of components
+ggplot(pls_fit_caret, highlight = TRUE) + theme_bw()
+
+# Apply optimal model to test data
+pls_pred_caret = predict(pls_fit_caret, newdata = testing_predictors_matrix)
+
+# Find test error
+caret_pls_rmse = RMSE(pls_pred_caret, test_data$sale_price)
+```
+
+Using the `caret` package, we obtain a test error of `r caret_pls_rmse` (RMSE) when we apply the optimal model, which has 15 components, to our test data set.
 
 ## Model comparison
 
@@ -497,7 +558,7 @@ Finally, we use a resampling method to check how our final models perform on RMS
 set.seed(2132)
 
 # Resampling testing
-resamp = resamples(list(lm = fit_lm_caret, lasso_1se = lasso_caret_fit_1se, lasso_min = lasso_caret_fit_min, enet = enet_fit))
+resamp = resamples(list(lm = fit_lm_caret, lasso_1se = lasso_caret_fit_1se, lasso_min = lasso_caret_fit_min, enet = enet_fit, pls = pls_fit_caret))
 
 # Summary statistics on resampling
 summary(resamp)
@@ -506,4 +567,4 @@ summary(resamp)
 bwplot(resamp, metric = "RMSE")
 ```
 
-Based on this, we would likely use the elastic net model to predict our response because its mean RMSE over cross-validation trials is lower than the mean RMSE found for the other methods.
+Based on this, we would likely use the elastic net model to predict our response because its mean RMSE over cross-validation trials is lower than the mean RMSE found for the other methods. That said, all of our methods actually give us relatively similar RMSE estimates.
