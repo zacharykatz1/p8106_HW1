@@ -507,7 +507,7 @@ summary(pls.mod) %>% knitr::kable()
 validationplot(pls.mod, val.type = "MSEP", legendpos = "topright")
 
 # Find cross-validation RMSE error (training data) only
-cv.mse = RMSEP(pls.mod) %>% knitr::kable()
+cv.mse = RMSEP(pls.mod)
 
 # How many components?
 ncomp.cv = which.min(cv.mse$val[1, , ])-1
@@ -530,12 +530,15 @@ Alternatively, we can implement the partial least squares method similarly in `c
 
 set.seed(2132)
 
+# Set cross-validation parameters again
+control_cv_best = trainControl(method = "repeatedcv", number = 20, repeats = 5, selectionFunction = "best")
+
 # Train model on training data using cross-validation
 pls_fit_caret = train(x = training_predictors_matrix,
                       y = training_outcomes_vector,
                       method = "pls",
                       tuneGrid = data.frame(ncomp = 1:39),
-                      trControl = control_cv,
+                      trControl = control_cv_best,
                       preProcess = c("center", "scale"))
 
 # Plot training RMSE against # of components
